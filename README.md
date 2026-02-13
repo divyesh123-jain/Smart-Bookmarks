@@ -72,3 +72,17 @@ my-app/
 3. Run: `npm install` then `npm run dev`.
 
 Deploy (e.g. Vercel): add same env vars; add production redirect URL in Supabase Auth URL config.
+
+## Problems & solutions
+
+- **Google OAuth redirect / "redirect_uri_mismatch"**  
+  Supabase Auth needs the exact callback URL in the Google Cloud Console (Authorized redirect URIs) and in Supabase → Authentication → URL configuration. For local: `http://localhost:3000/auth/callback`; for production: `https://<your-vercel-domain>/auth/callback`. Adding the Vercel URL to both places fixed it.
+
+- **Realtime not updating across tabs**  
+  Subscriptions were set up on the client, but the channel filter had to match the RLS policy (e.g. filter by `user_id = auth.uid()`). Ensuring the Realtime subscription used the same filter as the table policies made cross-tab updates work.
+
+- **Session lost after OAuth redirect**  
+  Next.js App Router doesn’t share cookies by default with the route handler. Using `@supabase/ssr` and passing the request’s `cookies()` into `createServerClient` in `/auth/callback/route.ts` (and in middleware for refresh) kept the session consistent after the redirect.
+
+- **RLS blocking inserts**  
+  Initial bookmark insert failed until the `profiles` row existed. Added an upsert in the auth callback so the first login creates (or updates) the profile; after that, RLS on `bookmarks` (e.g. `user_id = auth.uid()`) allowed inserts.
