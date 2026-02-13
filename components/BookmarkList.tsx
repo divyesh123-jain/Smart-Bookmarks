@@ -1,7 +1,8 @@
 'use client'
 
 import { createClient } from '@/lib/supabase/client'
-import { useEffect, useState } from 'react'
+import { validateUrl, urlToTitle } from '@/lib/url'
+import { useEffect, useRef, useState } from 'react'
 import { Bookmark } from '@/types/bookmark'
 
 export default function BookmarkList() {
@@ -12,6 +13,7 @@ export default function BookmarkList() {
   const [editTitle, setEditTitle] = useState('')
   const [editSaving, setEditSaving] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
+  const channelRef = useRef<ReturnType<ReturnType<typeof createClient>['channel']> | null>(null)
 
   useEffect(() => {
     const supabase = createClient()
@@ -41,8 +43,9 @@ export default function BookmarkList() {
 
       setLoading(false)
 
+      const channelName = `bookmarks:${user.id}`
       channel = supabase
-        .channel('bookmarks-changes')
+        .channel(channelName)
         .on(
           'postgres_changes',
           {
@@ -55,9 +58,10 @@ export default function BookmarkList() {
             if (payload.eventType === 'INSERT') {
               setBookmarks((prev) => [payload.new as Bookmark, ...prev])
             } else if (payload.eventType === 'DELETE') {
-              setBookmarks((prev) =>
-                prev.filter((b) => b.id !== payload.old.id)
-              )
+              const oldId = (payload.old as { id?: string })?.id
+              if (oldId) {
+                setBookmarks((prev) => prev.filter((b) => b.id !== oldId))
+              }
             } else if (payload.eventType === 'UPDATE') {
               setBookmarks((prev) =>
                 prev.map((b) => (b.id === payload.new.id ? (payload.new as Bookmark) : b))
@@ -65,12 +69,18 @@ export default function BookmarkList() {
             }
           }
         )
+        .on('broadcast', { event: 'delete' }, (payload) => {
+          const id = (payload as { id?: string })?.id
+          if (id) setBookmarks((prev) => prev.filter((b) => b.id !== id))
+        })
         .subscribe()
+      channelRef.current = channel
     }
 
     setupRealtime()
 
     return () => {
+      channelRef.current = null
       if (channel) {
         supabase.removeChannel(channel)
       }
@@ -78,8 +88,16 @@ export default function BookmarkList() {
   }, [])
 
   const handleDelete = async (id: string) => {
+    setBookmarks((prev) => prev.filter((b) => b.id !== id))
     const supabase = createClient()
-    await supabase.from('bookmarks').delete().eq('id', id)
+    const { data: { user }, error: userErr } = await supabase.auth.getUser()
+    const { error } = await supabase.from('bookmarks').delete().eq('id', id)
+    if (error && user && !userErr) {
+      const { data } = await supabase.from('bookmarks').select('*').eq('user_id', user.id).order('created_at', { ascending: false })
+      if (data) setBookmarks(data)
+    } else if (!error) {
+      channelRef.current?.send({ type: 'broadcast', event: 'delete', payload: { id } })
+    }
   }
 
   const startEdit = (b: Bookmark) => {
@@ -96,24 +114,16 @@ export default function BookmarkList() {
 
   const handleEditSave = async () => {
     if (!editingId) return
-    const url = editUrl.trim()
-    if (!url) {
-      setEditError('URL is required')
+    const validated = validateUrl(editUrl)
+    if (!validated.ok) {
+      setEditError(validated.error)
       return
     }
-    let finalUrl = url
-    if (!/^https?:\/\//i.test(finalUrl)) finalUrl = `https://${finalUrl}`
-    const title = editTitle.trim() || (() => {
-      try {
-        return new URL(finalUrl).hostname
-      } catch {
-        return 'Link'
-      }
-    })()
+    const title = editTitle.trim() || urlToTitle(validated.url)
     setEditSaving(true)
     setEditError(null)
     const supabase = createClient()
-    const { error } = await supabase.from('bookmarks').update({ url: finalUrl, title }).eq('id', editingId)
+    const { error } = await supabase.from('bookmarks').update({ url: validated.url, title }).eq('id', editingId)
     if (error) {
       setEditError(error.message)
       setEditSaving(false)

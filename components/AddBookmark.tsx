@@ -1,6 +1,7 @@
 'use client'
 
 import { createClient } from '@/lib/supabase/client'
+import { validateUrl, urlToTitle } from '@/lib/url'
 import { useState } from 'react'
 
 export default function AddBookmark() {
@@ -11,33 +12,22 @@ export default function AddBookmark() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!url.trim()) return
+    const validated = validateUrl(url)
+    if (!validated.ok) {
+      setError(validated.error)
+      return
+    }
     setError(null)
     setLoading(true)
     const supabase = createClient()
-
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-
+    const { data: { user } } = await supabase.auth.getUser()
     if (!user) {
       setLoading(false)
       return
     }
-
-    let finalUrl = url.trim()
-    if (!/^https?:\/\//i.test(finalUrl)) finalUrl = `https://${finalUrl}`
-    let bookmarkTitle = title.trim()
-    if (!bookmarkTitle) {
-      try {
-        bookmarkTitle = new URL(finalUrl).hostname
-      } catch {
-        bookmarkTitle = 'Link'
-      }
-    }
-
+    const bookmarkTitle = title.trim() || urlToTitle(validated.url)
     const { error: err } = await supabase.from('bookmarks').insert({
-      url: finalUrl,
+      url: validated.url,
       title: bookmarkTitle,
       user_id: user.id,
     })
